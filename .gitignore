@@ -1,0 +1,57 @@
+# ========================
+# 🔐 Secrets & Environment
+# ========================
+.env
+.env.*
+*.env
+
+# ========================
+# 🐍 Python Backend
+# ========================
+intellichain-backend/venv/
+intellichain-backend/__pycache__/
+intellichain-backend/*.pyc
+intellichain-backend/*.pyo
+intellichain-backend/*.pyd
+intellichain-backend/.Python
+intellichain-backend/*.egg-info/
+intellichain-backend/dist/
+intellichain-backend/build/
+intellichain-backend/.pytest_cache/
+intellichain-backend/*.log
+intellichain-backend/test_api.py
+intellichain-backend/test_api_internal.py
+
+# ========================
+# ⚛️ React / Vite Frontend
+# ========================
+intellichain-frontend/node_modules/
+intellichain-frontend/dist/
+intellichain-frontend/.vite/
+intellichain-frontend/coverage/
+intellichain-frontend/*.log
+
+# ========================
+# 🛠️ IDEs & Editors
+# ========================
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ========================
+# 📦 NPM / Node
+# ========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# ========================
+# 🪟 Windows
+# ========================
+desktop.ini
+$RECYCLE.BIN/

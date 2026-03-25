@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pydantic
+networkx
+scikit-learn
+pandas
+flask
+flask-cors
+Requests
