@@ -41,9 +41,13 @@ print(f"Model Init: {'SUCCESS' if _gemini_model else 'FAILED'}")
 
 app = FastAPI()
 
+# In production, Cloud Run provides the PORT environment variable
+# If we were running directly via uvicorn in main.py, we'd use os.getenv("PORT", "8080")
+# but our Dockerfile CMD handles it: uvicorn main:app --port ${PORT:-8080}
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], # For production, can be restricted to your-app-name.web.app
     allow_methods=["*"],
     allow_headers=["*"],
 )

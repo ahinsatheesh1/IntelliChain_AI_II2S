@@ -24,6 +24,7 @@ const portHotspotIcon = new L.DivIcon({
 });
 
 const MAPBOX_KEY = import.meta.env.VITE_MAPBOX_KEY as string;
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 function BoundsUpdater({ routeData }: any) {
   const map = useMap();
@@ -205,7 +206,7 @@ export default function App() {
       setSourceText(srcObj.name);
       setDestText(dstObj.name);
 
-      const res = await fetch('http://localhost:8000/api/plan-route', {
+      const res = await fetch(`${API_URL}/api/plan-route`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ source: srcObj, destination: dstObj, simulation, cargo_type: cargoType, time_shift: timeShift, enterprise_mode: enterpriseMode, num_units: numUnits })
@@ -268,7 +269,7 @@ export default function App() {
     setChatMessages(prev => [...prev, { role:'user', text: q }]);
     setChatLoading(true);
     try {
-      const res = await fetch('http://localhost:8000/api/ask-ai', {
+      const res = await fetch(`${API_URL}/api/ask-ai`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ question: q, context: buildContext() })
