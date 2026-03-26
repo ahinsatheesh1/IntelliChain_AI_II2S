@@ -8,7 +8,9 @@ import json
 import math
 import copy
 import os
+import requests
 from pathlib import Path
+import google.generativeai as genai
 
 # Load .env file manually (no extra deps needed)
 _env_path = Path(__file__).parent.parent / ".env"
@@ -17,10 +19,25 @@ if _env_path.exists():
         line = line.strip()
         if line and not line.startswith('#') and '=' in line:
             k, v = line.split('=', 1)
-            os.environ.setdefault(k.strip(), v.strip())
+            os.environ[k.strip()] = v.strip()
 
 WEATHER_KEY = os.environ.get("weather_api", "")
 MAPBOX_KEY  = os.environ.get("map_box_api", "")
+GEMINI_KEY  = os.environ.get("GEMINI_API_KEY", "")
+
+try:
+    if GEMINI_KEY:
+        genai.configure(api_key=GEMINI_KEY)
+        # Verified 'models/gemini-2.0-flash' is available in models.txt
+        _gemini_model = genai.GenerativeModel("models/gemini-2.0-flash")
+    else:
+        _gemini_model = None
+except Exception:
+    _gemini_model = None
+
+print(f"--- INIT CHECK ---")
+print(f"Gemini Key: {'LOADED' if GEMINI_KEY else 'MISSING'}")
+print(f"Model Init: {'SUCCESS' if _gemini_model else 'FAILED'}")
 
 app = FastAPI()
 
@@ -174,6 +191,14 @@ def get_risk_factors(u, v, mode, simulation, is_raining, time_shift):
             val = random.randint(50, 70)
             factors.append({"name": "Heavy rainfall (+ flooding warnings)", "value": val})
             total_risk += val; extra_time += 12
+        elif mode == "sea":
+            val = random.randint(40, 60)
+            factors.append({"name": "Maritime safety speed reduction", "value": val})
+            total_risk += val; extra_time += 8
+        elif mode == "rail":
+            val = random.randint(15, 25)
+            factors.append({"name": "Rain-induced speed restrictions", "value": val})
+            total_risk += val; extra_time += 2
     elif simulation == "Traffic Jam":
         if mode == "road":
             val = random.randint(40, 60)
@@ -185,7 +210,7 @@ def get_risk_factors(u, v, mode, simulation, is_raining, time_shift):
             factors.append({"name": "Vessel clearance blocked", "value": val})
             total_risk += val; extra_time += 72
 
-    if mode == "rail":
+    if mode == "rail" and simulation != "Heavy Rain":
         if total_risk > 25:
              total_risk = 18
              factors = [{"name": "Rail network high stability", "value": 18}]
@@ -195,7 +220,9 @@ def get_risk_factors(u, v, mode, simulation, is_raining, time_shift):
 def calculate_paths(src: Location, dst: Location, requested_sim: str, time_shift: int):
     D = haversine(src.lat, src.lng, dst.lat, dst.lng)
     
-    air_t = (D / 800) + 4
+    # Air overhead: 1.5h for short domestic hops, 4h for hub-based long-haul
+    air_overhead = 1.5 if D < 600 else 4.0
+    air_t = (D / 800) + air_overhead
     edges_def = [
        (src.name, dst.name, "air", {"base_time": air_t, "base_cost": D * 50, "coords": [[src.lat, src.lng], [dst.lat, dst.lng]]})
     ]
@@ -303,6 +330,11 @@ def calculate_paths(src: Location, dst: Location, requested_sim: str, time_shift
 
 @app.post("/api/plan-route")
 def plan_route(req: RouteRequest):
+    D = haversine(req.source.lat, req.source.lng, req.destination.lat, req.destination.lng)
+    if D < 0.1:
+        return {"error": "Source and Destination are the same location. Please select distinct endpoints for logistics analysis.", "routes": []}
+    
+    active_sim = req.simulation
     routes, active_sim, weather_m, weather_desc, edge_details = calculate_paths(req.source, req.destination, req.simulation, req.time_shift)
     if not routes: raise HTTPException(status_code=404, detail="No route found between coordinates.")
         
@@ -477,8 +509,167 @@ def plan_route(req: RouteRequest):
         "dfc_corridor": dfc_name,
         "carbon_kg": carbon_kg,
         "carbon_label": carbon_label,
-        "enterprise_data": enterprise_data
+        "enterprise_data": enterprise_data,
+        "split_allocation": _compute_split(valid_routes, rec_mode, D_km),
+        "live_events": _generate_events(active_sim, req.source.name, req.destination.name, weather_m, nearby_hubs)
     }
+
+def _compute_split(routes, primary_mode, D_km):
+    """Generate a realistic split shipment allocation across top 2 routes."""
+    if len(routes) < 2:
+        return None
+    fastest = min(routes, key=lambda r: r['total_eta_hrs'])
+    cheapest = min(routes, key=lambda r: r['total_cost'])
+    if fastest == cheapest:
+        return None
+    fast_mode = fastest['details'][0]['mode'] if fastest['details'] else 'air'
+    cheap_mode = cheapest['details'][0]['mode'] if cheapest['details'] else 'rail'
+    # Don't split if same mode
+    if fast_mode == cheap_mode:
+        return None
+    # 30% urgent / 70% bulk split
+    urgent_pct, bulk_pct = 30, 70
+    urgent_cost = int(fastest['total_cost'] * urgent_pct / 100)
+    bulk_cost = int(cheapest['total_cost'] * bulk_pct / 100)
+    mode_emoji = {'air': '✈️', 'road': '🚚', 'rail': '🚆', 'sea': '🚢'}
+    return {
+        "splits": [
+            {"label": "Urgent Dispatch", "mode": fast_mode, "emoji": mode_emoji.get(fast_mode, '📦'),
+             "pct": urgent_pct, "eta": fastest['total_eta_hrs'], "cost": urgent_cost,
+             "reason": "Time-critical inventory fast-tracked"},
+            {"label": "Bulk Consignment", "mode": cheap_mode, "emoji": mode_emoji.get(cheap_mode, '📦'),
+             "pct": bulk_pct, "eta": cheapest['total_eta_hrs'], "cost": bulk_cost,
+             "reason": "Cost-optimized bulk shipment"},
+        ],
+        "total_cost": urgent_cost + bulk_cost,
+        "explanation": f"{urgent_pct}% dispatched via {fast_mode.upper()} for urgency · {bulk_pct}% via {cheap_mode.upper()} for cost efficiency"
+    }
+
+def _generate_events(sim, src, dst, weather, hubs):
+    """Generate a realistic live events feed based on current state."""
+    events = []
+    import time as _time
+    now_ts = int(_time.time())
+    if sim == "Heavy Rain":
+        events.append({"type": "warning", "icon": "🌧️", "msg": f"Heavy rainfall alert active over {src} corridor", "age": "Just now"})
+        events.append({"type": "reroute", "icon": "🔀", "msg": f"AI rerouted via Rail to avoid air disruption", "age": "2m ago"})
+    if sim == "Traffic Jam":
+        events.append({"type": "warning", "icon": "🚦", "msg": f"Highway congestion detected near {dst}", "age": "Just now"})
+        events.append({"type": "info", "icon": "🚆", "msg": "Rail capacity allocated as backup", "age": "1m ago"})
+    if sim == "Port Congestion":
+        events.append({"type": "critical", "icon": "⚓", "msg": f"Port congestion alert: {src} maritime node at capacity", "age": "Just now"})
+        events.append({"type": "reroute", "icon": "✈️", "msg": "Sea routes suspended · Inland logistics activated", "age": "3m ago"})
+    if weather in ["Rain", "Thunderstorm", "Snow"]:
+        events.append({"type": "warning", "icon": "⛈️", "msg": f"Live weather: {weather} detected at source node", "age": "Live"})
+    for h in hubs[:2]:
+        events.append({"type": "info", "icon": "🏭", "msg": f"{h['name']} operational · High-capacity throughput active", "age": "5m ago"})
+    events.append({"type": "info", "icon": "🤖", "msg": "IntelliChain AI graph recalculated successfully", "age": "Just now"})
+    return events[:6]
+
+# ─── Gemini AI Chat Endpoint ───────────────────────────────────────
+class AiQuery(BaseModel):
+    question: str
+    context: dict = {}
+
+@app.post("/api/ask-ai")
+def ask_ai(query: AiQuery):
+    if not _gemini_model:
+        return {"answer": "⚠️ Gemini API key not configured. Please add GEMINI_API_KEY to your .env file.", "error": True}
+
+    ctx = query.context
+    prompt = f"""You are IntelliChain AI — an elite logistics decision engine for India and global supply chains.
+You ONLY use the provided real-time context from our routing engine. Never hallucinate data.
+
+=== LIVE ROUTE CONTEXT ===
+Source            : {ctx.get('source', 'N/A')}
+Destination       : {ctx.get('destination', 'N/A')}
+Cargo Type        : {ctx.get('cargo', 'General')}
+Active Disruption : {ctx.get('simulation', 'None')}
+Live Weather      : {ctx.get('weather', 'Clear')}
+Predictive Risk   : {ctx.get('risk', 0)}%
+Available Modes   : {', '.join(ctx.get('available_modes', [])) or 'All modes'}
+Route Costs       : {json.dumps(ctx.get('costs', {}), indent=2)}
+Recommended Mode  : {ctx.get('recommended_mode', 'N/A')}
+Carbon Footprint  : {ctx.get('carbon_label', 'N/A')}
+Nearby India Hubs : {', '.join(ctx.get('nearby_hubs', [])) or 'None detected'}
+DFC Corridor      : {ctx.get('dfc_corridor') or 'Not applicable'}
+
+=== USER QUESTION ===
+{query.question}
+
+=== RESPONSE FORMAT (use exactly this) ===
+🚚 Recommended Mode: [mode]
+⚠️ Risk Assessment: [risk level and reasoning]
+💰 Cost Insight: [cost in ₹ and comparison]
+🧠 AI Reasoning: [why this mode is best given context]
+🌍 Carbon Impact: [environmental impact]
+🔁 Alternative Option: [backup route with trade-offs]
+📦 Cargo Advisory: [specific advice for this cargo type]
+
+Be concise, direct, and decision-grade. Max 120 words total."""
+
+    # --- FALLBACK 1: GOOGLE GEMINI (PRIMARY + MULTI-MODEL RETRY) ---
+    models_to_try = ["models/gemini-2.0-flash", "models/gemini-1.5-flash", "gemini-1.5-flash", "models/gemini-flash-latest"]
+    last_error = ""
+    for model_name in models_to_try:
+        try:
+            print(f"Trying Gemini model: {model_name}...")
+            temp_model = genai.GenerativeModel(model_name)
+            response = temp_model.generate_content(prompt)
+            if response and hasattr(response, 'text') and response.text:
+                return {"answer": response.text, "error": False, "provider": f"Gemini ({model_name.split('/')[-1]})"}
+        except Exception as e:
+            last_error = str(e)
+            print(f"Gemini {model_name} failed: {last_error}")
+            continue
+
+    print(f"!!! ALL GEMINI MODELS FAILED !!! Last error: {last_error}")
+
+    # --- FALLBACK 2: OLLAMA LOCAL (SECONDARY) ---
+    try:
+        ollama_res = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": "llama3",
+                "prompt": prompt + "\n\nIMPORTANT: Respond ONLY with the requested format.",
+                "stream": False
+            },
+            timeout=10
+        )
+        if ollama_res.status_code == 200:
+            text = ollama_res.json().get("response", "")
+            return {"answer": text, "error": False, "provider": "Ollama (Llama 3)"}
+    except Exception as ollama_err:
+        print(f"Ollama failed: {ollama_err}")
+
+    # --- FALLBACK 3: RULE-BASED ENGINE (TERTIARY / SAFETY) ---
+    return {
+        "answer": _rule_based_fallback(ctx, query.question),
+        "error": False,
+        "provider": "Rule-Based Engine (Safety Mode)"
+    }
+
+def _rule_based_fallback(ctx, q):
+    """Deterministic fallback when all LLMs fail."""
+    q = q.lower()
+    mode = ctx.get('recommended_mode', 'N/A').upper()
+    risk = ctx.get('risk', 0)
+    
+    advice = "Maintain standard handling protocols."
+    if "med" in q or ctx.get('cargo') == 'medicine':
+        advice = "URGENT: Prioritize climate-controlled storage and expedited customs clearance."
+    elif "food" in q:
+        advice = "NOTICE: Ensure cold-chain integrity to prevent spoilage."
+    
+    risk_msg = "Low Risk detected." if risk < 30 else "Moderate disruption probable." if risk < 50 else "CRITICAL: Significant SLA failure risk. Immediate rerouting active."
+    
+    return f"""🚚 Recommended Mode: {mode}
+⚠️ Risk Assessment: {risk}% - {risk_msg}
+💰 Cost Insight: Costs vary by node traffic. Check live quotes.
+🧠 AI Reasoning: Deterministic fallback triggered. Route selected based on hard constraints.
+🌍 Carbon Impact: Label: {ctx.get('carbon_label', 'N/A')}
+🔁 Alternative Option: Check rail/sea routes for cost recovery.
+📦 Cargo Advisory: {advice}"""
 
 if __name__ == "__main__":
     import uvicorn

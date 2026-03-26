@@ -7,3 +7,4 @@ pandas
 flask
 flask-cors
 Requests
+google-generativeai
