@@ -443,9 +443,18 @@ export default function App() {
           
           {apiData && (
             <div>
-              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:'20px'}}>
-                <h2 className="section-title" style={{margin:0}}><Activity size={18} /> Alternatives Generated</h2>
-                <button onClick={() => setShowCompare(true)} style={{background:'linear-gradient(135deg,#7c3aed,#3b82f6)', color:'var(--text-primary)', border:'none', borderRadius:'6px', padding:'5px 10px', cursor:'pointer', fontSize:'0.72rem', fontWeight:700, letterSpacing:'0.5px'}}>⚡ Compare All</button>
+              <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:'20px', gap:'10px'}}>
+                <h2 className="section-title" style={{margin:0}}><Activity size={18} /> Alternatives</h2>
+                <button 
+                  onClick={() => {
+                    console.log("Opening Compare Modal");
+                    setShowCompare(true);
+                  }} 
+                  className="btn"
+                  style={{padding:'8px 16px', fontSize:'0.75rem', width:'auto', margin:0, background:'linear-gradient(135deg,#6366f1,#8b5cf6)'}}
+                >
+                  ⚡ Analytics Lab
+                </button>
               </div>
               {apiData.routes.map((r: any, idx: number) => {
                  const isRecommended = idx === apiData.recommended_index;
@@ -789,8 +798,8 @@ export default function App() {
         }).sort((a:any, b:any) => b.aiScore - a.aiScore);
         const best = scored[0];
         return (
-          <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', backdropFilter:'blur(8px)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center', padding:'24px'}}>
-            <div style={{background:'var(--bg-main)', border:'1px solid var(--accent-primary)', borderRadius:'24px', width:'100%', maxWidth:'920px', padding:'32px', boxShadow:'var(--glass-shadow)', position:'relative', maxHeight:'90vh', overflowY:'auto'}}>
+          <div style={{position:'fixed', inset:0, background:'rgba(0,0,0,0.6)', backdropFilter:'blur(8px)', zIndex:10100, display:'flex', alignItems:'center', justifyContent:'center', padding:'24px'}}>
+            <div style={{background:'var(--bg-main)', border:'1px solid var(--accent-primary)', borderRadius:'24px', width:'100%', maxWidth:'920px', padding:'32px', boxShadow:'var(--glass-shadow)', position:'relative', maxHeight:'85vh', overflowY:'auto'}}>
               <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'24px'}}>
                 <div style={{fontSize:'1.5rem', fontWeight:800, color:'var(--text-primary)', letterSpacing:'-0.5px'}}>⚡ Logistics Intelligence Lab</div>
                 <button onClick={() => setShowCompare(false)} style={{background:'rgba(239,68,68,0.2)', border:'1px solid #ef4444', color:'#ef4444', borderRadius:'6px', padding:'4px 12px', cursor:'pointer', fontWeight:700}}>✕ Close</button>
